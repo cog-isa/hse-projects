@@ -33,211 +33,254 @@ def distance (S1, S2):
     delta_x = S1.x-S2.x
     delta_y = S1.y-S2.y
     return np.sqrt(delta_x*delta_x+delta_y*delta_y)
+# sign function
 def sign (a):
-    if (a <= 1):
-        return -1
-    else:
-        return 1
+    ans = np.zeros((Constants.n, 1))
+    for i in range(Constants.n):
+        if (a[i,0] <= 0):
+            ans[i,0] = -1
+        else:
+            ans[i,0] = 1
+    return ans
 
-predictorArea = 50 # area size containing only 1 predictor
-N = 3 # number of attractors
-SD = 50 #epsilon of saccade distance
-result = -1 # the number of attractor
-folder_name = ['Giraffe/', 'Cat/', 'Dog/']
-predictors = []
-# reading predictors
-tree = ET.parse('predictors.xml')
-root = tree.getroot()
-for predictor in root:
-    F_src = Feature(int(predictor[0][0].text), int(predictor[0][1].text))
-    S = Feature (int(predictor[1][0].text), int(predictor[1][1].text))
-    F_tgt = Feature(int(predictor[2][0].text), int(predictor[2][1].text))
-    A = int(predictor[3].text)
-    predictors.append(Predictor(F_src, S, F_tgt, A))
-Attractor = [] # N x n matrix containing attractors
-for i in range(N):
-    Attractor.append([])
-features = [] # a list containing info about found picture's features
-path_to_image = folder_name[0]
-img = cv2.imread(path_to_image+"1.png")
-# searching features in input image
-gray_img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-grayimg = np.float32(gray_img)
-blockSize = 2;
-kSize = 3;
-dst = cv2.cornerHarris(gray_img, blockSize, kSize, 0.04)
-features = []
-corners =  np.where (dst > 0.2*dst.max())
-for i in range(len(corners[0])):
-    x = corners[0][i]
-    y = corners[1][i]
-    img[(x, y)] = [0, 255, 0]
-    if len (features) == 0:
-        features.append(Feature(y, x))
-    else:
-        f = False
-        for j in features:
-            if isPointInRect((x, y), (j.y, j.x), predictorArea) == True:
-                f = True
-                break
-        if f == False:
+#Habor filter
+def getFeatures (img):
+    predictorArea = 50 # area size containing only 1 predictor
+    gray_img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    grayimg = np.float32(gray_img)
+    blockSize = 2;
+    kSize = 3;
+    dst = cv2.cornerHarris(gray_img, blockSize, kSize, 0.04)
+    features = []
+    corners =  np.where (dst > 0.2*dst.max())
+    for i in range(len(corners[0])):
+        x = corners[0][i]
+        y = corners[1][i]
+        img[(x, y)] = [0, 255, 0]
+        if len (features) == 0:
             features.append(Feature(y, x))
+        else:
+            f = False
+            for j in features:
+                if isPointInRect((x, y), (j.y, j.x), predictorArea) == True:
+                    f = True
+                    break
+            if f == False:
+                features.append(Feature(y, x))
+    return features
+
+def getPredictors ():
+    predictors = []
+    tree = ET.parse('predictors.xml')
+    root = tree.getroot()
+    for predictor in root:
+        F_src = Feature(int(predictor[0][0].text), int(predictor[0][1].text))
+        S = Feature (int(predictor[1][0].text), int(predictor[1][1].text))
+        F_tgt = Feature(int(predictor[2][0].text), int(predictor[2][1].text))
+        A = int(predictor[3].text)
+        predictors.append(Predictor(F_src, S, F_tgt, A))
+    return predictors
+
+#Constants
+class Constants:
+    N = 3; # number of attractors
+    saccadeEps = 50 #epsilon of saccade distance
+    folder_name = ['Giraffe/', 'Cat/', 'Dog/']
+    n = 0; # number of predictors
+    a = 50; #number of random chosen predictors which are 1
+    t = 0.5; #threshold
+    foveaArea = 50
+    s = 5; #number of activated predictors of same attractor
+
+def setPredictorsNumber (predictors):
+    Constants.n = len(predictors)
+
+def getInputImage (pathToImage):
+    img = cv2.imread(pathToImage)
+    return img
+
+#initialize Attractors (matrix)
+def getAttractors(predictors):
+    A_mu = np.zeros((Constants.N, Constants.n))
+    for i in range(Constants.n):
+        for j in range(Constants.N):
+            if predictors[i].A == j:
+                A_mu[j,i] = 1
+            else:
+                A_mu[j,i] = -1
+    return A_mu
 
 # marking features on picture
-for i in features:
-    img = cv2.circle (img, (i.x, i.y), 10, (0,255,0), 3)
-
-n = len(predictors)
-for i in range(N):              # making matrix of attrators
-    for j in range (n):
-        Attractor[i].append(-1)
-
-for i in range (N):             #filling the matrix of attrators
-    for j in range(n):
-        if predictors[j].A == i:
-            Attractor[i][j] = 1
-# matrix of Hopfield network
-J = np.zeros((n, n))
-for i in range (N):
-    A_mu = np.matrix(Attractor[i])
-    J = J + A_mu.T*A_mu
-for i in range(n):
-    J[i,i] = 0
-J = J/N
-# calc the card of active predictors belonging to the attractor i
-activePredictorsNum = []
-for i in range(N):
-    activePredictorsNum.append(0)
-    for j in predictors:
-        if j.A == i:
-            activePredictorsNum[i] = activePredictorsNum[i] + 1
-
-a = 500 #number of random chosen predictors which are 1
-A = []  #potential Attractor
-for i in range(n):
-    A.append(-1)
-free_positions = range(n)
-number_of_active_predictors = [0, 0, 0]
-while (a > 0):                  #generation of random vector of a positive elements
-    j = random.randint(0, len(free_positions)-1)
-    A[j] = 1
-    number_of_active_predictors[predictors[j].A] = number_of_active_predictors[predictors[j].A] + 1
-    a = a - 1
-    del free_positions[j]
-for i in range(n):
-    if A[i] == 1:
-        img = cv2.circle (img, (predictors[i].F_src.x, predictors[i].F_src.y), 10, (133,133,133), 3)
-cv2.imshow('All active predictors', img)
-if cv2.waitKey(0):
-    cv2.destroyAllWindows()
-RP = []
-SP = []
-AA = range(n)
-NR = np.zeros((n, 1)) # Necessary resources
-R = np.zeros((n, 1))
-t = 0.7 # treshold
-fovea = Feature(0, 0)
-F_srcSize = 50 #size of area where will be found source features
-F_tgtSize = 50 #size of area where shoul be target point
-for step in range (10):
-    img = cv2.imread(path_to_image+"1.png")
-    RP = []
-    # setting fovea at random position
-    j = random.randint(0, len(features)-1)
-    fovea = features[j]
-    for i in range(n):
-        #img = cv2.putText(img, str(A[i]), (predictors[i].F_src.x, predictors[i].F_src.y), cv2.FONT_HERSHEY_COMPLEX, 1, (0,255,0))
-        if A[i] == 1:
-            # if F_src belongs to fovea view
-            if isPointInRect((predictors[i].F_src.x, predictors[i].F_src.y), (fovea.x, fovea.y), F_srcSize):
-                sCurrent = predictors[i].S
-                for j in features:
-                    # ...and if saccade of this predictor lead to some feature
-                    if (isPointInRect((sCurrent.x + fovea.x, sCurrent.y+fovea.y), (j.x, j.y), F_tgtSize) == True):
-                        RP.append(i)
-    for i in RP:
-        img = cv2.circle (img, (predictors[i].F_src.x, predictors[i].F_src.y), 10, (0,0,255), 3)
-    img = cv2.circle (img, (fovea.x, fovea.y), 10, (255,0,0), 3)
-    img = cv2.rectangle(img, (fovea.x-F_srcSize, fovea.y+F_srcSize), (fovea.x+F_srcSize, fovea.y-F_srcSize), (0,0,255), 1)
-    cv2.imshow('Relevant Predictors and fovea on step ' + str(step), img)
+def setFeaturesOnImage (features, img, color):
+    for i in features:
+        img = cv2.circle (img, (i.x, i.y), 10, color, 3)
+# function
+def showImage(title, img):
+    cv2.imshow(title, img)
     if cv2.waitKey(0):
         cv2.destroyAllWindows()
 
-    for i in range(n):
-        AA[i] = A[i]
-    SP = []
+# matrix of Hopfield network
+def createMatrixJ (predictors):
+    J = np.zeros((Constants.n, Constants.n))
+    for i in range(Constants.n):
+        for j in range(Constants.n):
+            if predictors[i].A == predictors[j].A:
+                J[i,j] = 1
+                J[j,i] = 1
+    np.fill_diagonal(J, 0)
+    return J
+
+#generate A vector where P(A[i] = 1) = a
+def getAVector (a):
+    A = np.zeros((Constants.n,1))
+    A.fill(-1)
+    A[random.sample(range(Constants.n), a), 0] = 1
+    return A
+# function
+def setPointOnImage (point, img, color):
+    img = cv2.circle (img, (point.x, point.y), 10, color, 3)
+# function
+def showInitialPredictors (A, img, color):
+    for i in range(Constants.n):
+        if A[i,0] == 1:
+            setPointOnImage(predictors[i].F_src, img, color)
+    showImage("Active Predictors after step", img)
+# function
+def showRP (RP, img, color):
+    for i in RP:
+        setPointOnImage(predictors[i].F_src, img, color)
+    showImage("Relevant predictors", img)
+# function
+def showSaccade (fovea, S_best, img):
+     img = cv2.arrowedLine(img, (fovea.x-predictors[S_best].S.x, fovea.y-predictors[S_best].S.y), (fovea.x, fovea.y), (0,255,0))
+     img = cv2.circle (img, (fovea.x, fovea.y), 10, (0,100,255), 3)
+     showImage("Saccade and F_tgt", img)
+# Activate s random same category predictors
+def activateSameAttractorPredictors (j, A):
+    category = predictors[j].A
+    freePositions = []
+    for i in range(Constants.n):
+        if A[i,0] == -1 and predictors[i].A == category:
+            freePositions.append(i)
+    #list of s random indexes of freepoStition
+    if (Constants.s > len(freePositions)):
+        Constants.s = len(freePositions)
+    randPositions = random.sample(freePositions, Constants.s)
+    finalPositions = []
+    for i in randPositions:
+        finalPositions.append(i)
+    A[finalPositions] = 1
+    for i in finalPositions:
+        setPointOnImage(predictors[i].F_src, img, (128,256,128))
+    #showImage("S activated predictors", img)
+# getting R vector (Equation 6)
+def getR (A_, J):
+    return np.dot(J, A_)/2
+# updating A (Equation 5)
+def updateA (A, R, NR):
+    A = sign(R-NR)
+def showUpdatedVectorA(A, img, color):
+    for i in range(Constants.n):
+        if (A[i,0] == 1):
+            setPointOnImage(predictors[i].F_src, img, color)
+    showImage("Updated Vector A", img)
+# get Percentage of similar active predictors for each category
+def getSimilarityPercentage (A, A_mu):
+    votes = np.zeros((Constants.N, Constants.n))
+    ans = []
+    for i in range (Constants.n):
+        for j in range (Constants.N):
+            if (A[i,0] == 1 and A_mu[j, i] == 1): #if 1 on the same position in A and Attractor, then give 1 vote for that
+                votes[j, i] = 1
+    for i in range(Constants.N):
+        ans.append(sum(votes[i,:])/sum(A_mu[i,:] == 1))
+    return ans
+# define a winner, i.e. attractor, having percent of active predictors > t
+def getWinner (percentages):
+    for i in range(Constants.N):
+        if (percentages[i] > Constants.t):
+            print Constants.folder_name[i]
+            return i
+    return -1
+predictors = getPredictors()
+img = getInputImage(Constants.folder_name[2] + '1.png')
+setPredictorsNumber(predictors)
+features = getFeatures(img)
+setFeaturesOnImage(features, img, (0,255,0))
+A_mu = getAttractors(predictors)
+# showImage("Detected Features", img)
+A = getAVector(Constants.a)
+#showGeneratedPredictors(A, img, (100, 255, 255))
+J = createMatrixJ(predictors)
+
+A_ = np.zeros((Constants.n, 1))
+NR = np.zeros((Constants.n, 1)) # Necessary resources
+R = np.zeros((Constants.n, 1))
+fovea = Feature(0, 0)
+for step in range (50):
+    print step
+    #showInitialPredictors(A, img, (100, 255, 255))
+    RP = []
+
+    #RP selection
+    # setting fovea at random position
+    fovea = features[random.randint(0, len(features)-1)]
+    for i in range(Constants.n):
+        if A[i,0] == 1:
+            # if F_src belongs to fovea area view
+            if isPointInRect((predictors[i].F_src.x, predictors[i].F_src.y), (fovea.x, fovea.y), Constants.foveaArea):
+                sCurrent = predictors[i].S
+                for j in features:
+                    # ...and if saccade of this predictor lead to some feature
+                    if (isPointInRect((sCurrent.x + fovea.x, sCurrent.y+fovea.y), (j.x, j.y), Constants.foveaArea) == True):
+                        RP.append(i)
+    #showRP(RP, img, (255, 0, 0))
+
     while len (RP)!=0:
+
+        #best saccade choice
         sUsage = [0 for i in predictors] # list of saccade voting numbers
         for i in RP:
             sCurrent = predictors[i].S
             for j in RP:
                 # if distance between Saccade less then some constant means that they lead to the same point
-                if (distance(sCurrent, predictors[j].S) < SD):
+                if (distance(sCurrent, predictors[j].S) < Constants.saccadeEps):
                     sUsage[i] = sUsage[i] + 1
         S_best = np.argmax(sUsage)
         fovea.x = fovea.x + predictors[S_best].S.x
         fovea.y = fovea.y + predictors[S_best].S.y
-        img = cv2.arrowedLine(img, (fovea.x-predictors[S_best].S.x, fovea.y-predictors[S_best].S.y), (fovea.x, fovea.y), (0,0,0))
-        img = cv2.circle (img, (fovea.x, fovea.y), 10, (0,100,255), 3)
-        cv2.imshow('Moving fovea through the best saccade and fovea', img)
-        if cv2.waitKey(0):
-            cv2.destroyAllWindows()
-
+        # showSaccade(fovea, S_best, img)
         # selection of successful predictors
+        A_[:] = A[:]
+        SP = []
 
-
+        #SP selection
         usedPredictors = [] # list of checked predictors
-        s = 50 # number of predictors which will be activated with SP
         for j in RP:
             # if current saccade is S_best
-            if distance(predictors[S_best].S, predictors[j].S) < SD:
-                # if target area is within fovea view
-                if (isPointInRect((predictors[j].F_tgt.x, predictors[j].F_tgt.y), (fovea.x, fovea.y), F_tgtSize)):
-                    img = cv2.arrowedLine(img, (predictors[j].F_src.x, predictors[j].F_src.y), (predictors[j].F_tgt.x, predictors[j].F_tgt.y), (100,255,0))
-                    img = cv2.circle (img, (predictors[j].F_tgt.x, predictors[j].F_tgt.y), 10, (128,0,128), 3)
-                    cv2.imshow('Found target points', img)
-                    if cv2.waitKey(0):
-                        cv2.destroyAllWindows()
+            if distance(predictors[S_best].S, predictors[j].S) < Constants.saccadeEps:
+            # if target area is within fovea view
+                if (isPointInRect((predictors[j].F_tgt.x, predictors[j].F_tgt.y), (fovea.x, fovea.y), Constants.foveaArea)):
+                    #showSaccade(fovea, S_best, img)
                     SP.append(j)
-                    indexes_of_predictors = []
-                    for i in range(n):
-                        if predictors[i].A == predictors[j].A: #indexes in predictors equals indexes in A, so we can find
-                            indexes_of_predictors.append(i)    # predictors of the same attractor and activate s random of them
-                    for i in range(s):
-                        k = random.randint(0, len(indexes_of_predictors)-1)
-                        A[indexes_of_predictors[k]] = 1
-                        del indexes_of_predictors[k]
+                    activateSameAttractorPredictors(j, A)
                 else:
-                    AA[j] = -1
+                    A_[j,0] = -1
                 usedPredictors.append(j)
         for i in usedPredictors:
             RP.remove(i)
         #returning fovea to test other relevant predictors
         fovea.x = fovea.x-predictors[S_best].S.x
         fovea.y = fovea.y-predictors[S_best].S.y
-
-
+#
+#
     # update network
     # equation 7
-    BB = np.matrix(AA).T+1
-    R = J*BB
-    R = R * 1/2
-    for i in range(n):
-            A[i] = sign(R.item(i, 0)-NR.item(i, 0))
-            if A[i] == 1:
-                img = cv2.circle(img, (predictors[i].F_src.x, predictors[i].F_src.y), 10, (50, 133, 240), 2)
-    cv2.imshow('All active predictors after step ' + str(step), img)
-    if cv2.waitKey(0):
-        cv2.destroyAllWindows()
-    for i in range(N):
-        # intersection of set A with set of the attractor to find common active predictors
-        commonActivePredictorsNum = 0
-        for j in range(n):
-           if Attractor[i][j] == A[j] and A[j] == 1:
-               commonActivePredictorsNum = commonActivePredictorsNum + 1
-        if commonActivePredictorsNum / activePredictorsNum[i] > t:
-            result = i
-            break
-    if result != -1:
+    R = getR(A_, J)
+    updateA(A, R, NR)
+    #showUpdatedVectorA(A, img, (255, 255, 0))
+    percentages = getSimilarityPercentage(A, A_mu)
+    print percentages
+    if getWinner(percentages) != -1:
         break
-print result
